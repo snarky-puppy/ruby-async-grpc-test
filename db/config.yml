@@ -1,0 +1,17 @@
+development:
+  adapter: postgresql
+  database: async
+  username: async
+  password: async
+  pool: 15
+  timeout: 5000
+  reaping_frequency: 1
+
+test:
+  adapter: postgresql
+  database: async
+  username: async
+  password: async
+  pool: 15
+  timeout: 5000
+  reaping_frequency: 1

@@ -1,0 +1,19 @@
+version: v1
+managed:
+  enabled: true
+
+plugins:
+  - plugin: buf.build/grpc/ruby:v1.58.0
+    out: .
+
+  # dependencies
+  - plugin: buf.build/protocolbuffers/ruby
+    out: .
+
+  # rust
+  - plugin: buf.build/grpc/rust:v1.58.0
+    out: .
+
+  # dependencies
+  - plugin: buf.build/protocolbuffers/rust
+    out: .

@@ -1,0 +1,23 @@
+syntax = "proto3";
+
+package test_service.v1;
+
+message CpuRequest {
+}
+
+message CpuResponse {
+  int32 fib = 1;
+}
+
+message DbRequest {
+}
+
+message DbResponse {
+  string result = 1;
+}
+
+service TestService {
+  rpc Cpu(CpuRequest) returns (CpuResponse);
+  rpc Db(DbRequest) returns (DbResponse);
+}
+
