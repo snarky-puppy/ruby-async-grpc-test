@@ -18,6 +18,10 @@ It's used as a test of the async event loop patch `async_grpc_patch.rb`.
 The server can be run using `bundler exec ruby test_service.rb [--async]`. `--async` will `require` the async
 patch.
 
+The server is configured for 5 threads, and maximum 5 async tasks per thread.
+
+The connection pool size is set to 25 connections, one for each possible async task.
+
 ### The patch
 
 The patch tries not to change much internal logic of gRPC. We replace [a single function](async_grpc_patch.rb) with an
@@ -32,17 +36,6 @@ Using this gem has several advantages over raw Fibers:
 
 1. It provides a compatible [Fiber scheduler](https://docs.ruby-lang.org/en/3.1/Fiber/SchedulerInterface.html)
 2. It provides a simple abstraction over Fibers, and some useful utilities[[1]](#1)
-
-### Server configuration
-
-The server is configured to use 5 threads for the thread based server and 5 async tasks per thread for the async server.
-
-| Config   | Threads | Async Tasks |
-|----------|---------|-------------|
-| Threaded | 5       | 0           |
-| Async    | 5       | 5           |
-
-NB: "Threads" refers to GRPC server threads. "Async Tasks" refers to the max number of async tasks allowed per thread.
 
 ### Testing methodology
 
@@ -138,21 +131,21 @@ Inserts some rows, selects a COUNT(*) with a delay introduced using `pg_sleep()`
 
 | Tasks | Loop | Duration | Successful | RetryMax | Retries | gRPC ResExh | gRPC Unavail | gRPC Other | Throughput (req/s) | Avg/Max/Min ms |
 |-------|------|----------|------------|----------|---------|-------------|--------------|------------|--------------------|----------------|
-| 5     | 20   | 8.16s    | 100        | 0        | 10      | 5           | 0            | 0          | 12.25              | 312/404/263    |
-| 10    | 20   | 16.03s   | 197        | 3        | 57      | 36          | 0            | 0          | 12.29              | 309/377/265    |
-| 20    | 20   | 33.37s   | 375        | 25       | 183     | 154         | 0            | 0          | 11.24              | 321/437/260    |
-| 40    | 20   | 54.85s   | 679        | 121      | 627     | 616         | 0            | 0          | 12.38              | 320/394/268    |
-| 80    | 20   | 97.13s   | 1073       | 527      | 2125    | 2380        | 0            | 0          | 11.05              | 332/407/265    |
+| 5     | 20   | 5.92s    | 100        | 0        | 0       | 0           | 0            | 0          | 16.89              | 295/352/266    |
+| 10    | 20   | 12.98s   | 200        | 0        | 30      | 15          | 0            | 0          | 15.41              | 297/337/268    |
+| 20    | 20   | 26.55s   | 385        | 15       | 135     | 105         | 0            | 0          | 14.50              | 311/375/271    |
+| 40    | 20   | 53.55s   | 695        | 105      | 525     | 525         | 0            | 0          | 12.98              | 314/407/269    |
+| 80    | 20   | 96.96s   | 1085       | 515      | 1975    | 2275        | 0            | 0          | 11.19              | 315/418/267    |
 
 #### Async
 
 | Tasks | Loop | Duration | Successful | RetryMax | Retries | gRPC ResExh | gRPC Unavail | gRPC Other | Throughput (req/s) | Avg/Max/Min ms |
 |-------|------|----------|------------|----------|---------|-------------|--------------|------------|--------------------|----------------|
-| 5     | 20   | 6.77s    | 100        | 0        | 0       | 0           | 0            | 0          | 14.77              | 337/571/280    |
-| 10    | 20   | 7.30s    | 200        | 0        | 0       | 0           | 0            | 0          | 27.40              | 363/416/325    |
-| 20    | 20   | 10.21s   | 400        | 0        | 34      | 17          | 0            | 0          | 39.18              | 398/729/287    |
-| 40    | 20   | 18.59s   | 800        | 0        | 414     | 207         | 0            | 0          | 43.03              | 518/1034/285   |
-| 80    | 20   | 38.09s   | 1566       | 34       | 1896    | 1033        | 0            | 0          | 41.12              | 561/1364/298   |
+| 5     | 20   | 5.74s    | 100        | 0        | 0       | 0           | 0            | 0          | 17.41              | 286/350/265    |
+| 10    | 20   | 7.80s    | 200        | 0        | 4       | 2           | 0            | 0          | 25.63              | 295/328/257    |
+| 20    | 20   | 9.09s    | 400        | 0        | 40      | 20          | 0            | 0          | 44.02              | 326/415/262    |
+| 40    | 20   | 14.76s   | 800        | 0        | 302     | 151         | 0            | 0          | 54.21              | 350/738/262    |
+| 80    | 20   | 25.64s   | 1586       | 14       | 1240    | 655         | 0            | 0          | 61.85              | 359/723/257    |
 
 ### memory_profiler results
 
@@ -183,20 +176,49 @@ Total retained:  9.59 MB (57025 objects)
 
 ## References
 
-<a id=1>1.</a>Example:
+<a id=1>1.</a> Example:
+
+### bounded
 
 ```ruby
-Notes
 Async do
   semaphore = Async::Semaphore.new(2)
-  (1..5).each do
-    puts "1"
+  (1..5).each do |i|
     semaphore.async do
-      puts "2"
+      puts "Enter task #{i}"
       sleep 1
-      puts "3"
+      puts "Exit task #{i}"
     end
-    puts "4"
+  end
+end
+
+```
+
+Output
+
+```
+Enter task 1
+Enter task 2
+Exit task 1
+Enter task 3
+Exit task 2
+Enter task 4
+Exit task 3
+Enter task 5
+Exit task 4
+Exit task 5
+```
+
+### unbounded
+
+```ruby
+Async do |task|
+  (1..5).each do |i|
+    task.async do
+      puts "Enter task #{i} fiber=#{Fiber.current}"
+      sleep 1
+      puts "Exit task #{i}"
+    end
   end
 end
 ```
@@ -204,24 +226,14 @@ end
 Output
 
 ```
-1
-2
-4
-1
-2
-4
-1
-3
-2
-4
-1
-3
-2
-4
-1
-3
-2
-4
-3
-3
+Enter task 1
+Enter task 2
+Enter task 3
+Enter task 4
+Enter task 5
+Exit task 1
+Exit task 2
+Exit task 3
+Exit task 4
+Exit task 5
 ```

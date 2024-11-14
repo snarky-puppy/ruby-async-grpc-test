@@ -1,68 +1,107 @@
 # frozen_string_literal: true
 
-require_relative '../config'
 require 'async'
+require_relative '../config'
+
+def get_pid(conn = ActiveRecord::Base.connection)
+  conn.execute("SELECT pg_backend_pid()").first['pg_backend_pid']
+end
 
 describe 'Async active record' do
 
   before(:all) do
-    User.create(email: 'matt')
+    # Reduce pool to 2
+    ActiveRecord::Base.connection_pool.disconnect!
+    ActiveRecord::Base.establish_connection(DB_CONFIG['two'])
+
+    # Ensure the pool size is 2
+    expect(ActiveRecord::Base.connection_pool.size).to eq(2)
   end
 
   after(:all) do
-    User.delete_all
+    # Reset pool size
+    ActiveRecord::Base.connection_pool.disconnect!
+    ActiveRecord::Base.establish_connection(DB_CONFIG['test'])
   end
 
-  it 'retrieves a user' do
+  before(:each) do
+    User.delete_all
+    puts "rspec thread connection id=#{get_pid}"
+
+    # NB: any DB action outside a thread or a task will check out a connection from the pool
+    # and not return it.
+    #
+    # For example, the 'sanity check' test below, or anything in a `before` block, if run
+    # before the next test, will fail the test as only 1 connection will be available in the
+    # pool.
+    #
+    # To avoid this, we need to make sure the connection pool is cleared after each test.
+    ActiveRecord::Base.connection_handler.clear_active_connections!
+  end
+
+  # NB: side effect of checking out a connection for use in rspec's thread
+  it 'sanity check' do
+    User.create(email: 'matt')
     user = User.first
     expect(user.email).to eq('matt')
   end
 
-  it 'ensures our 2 database connections are shared fairly between async tasks' do
-=begin
-Connection must be returned to the pool after use with ActiveRecord::Base.clear_active_connections!
-Otherwise, the connection will be held until past the end of the task.
+  it 'ensures 2 database connections are shared fairly between async tasks' do
+    pids = []
+    pids_mux = Mutex.new
 
-AR does NOT automatically return the connection to the pool after the task completes.
-
-Configuring reaping_frequency in database.yml to 1 second I /could/ get this test to work without
-explicitly calling clear_active_connections().
-
-IIUC, the :thread isolation level achieves this with some kind of request scope gem hook. So it's not built into AR.(?)
-
-Thoughts: It would be ideal from a DB connection management POV if we could not leave DB connections open
-while we wander off calling APIs etc. I think we might be a ways off from implementing this pattern.
-Meanwhile, for async to work we will need to allocate 1 connection per task per thread.
-=end
-    connection_pool = ActiveRecord::Base.connection_pool
-
-    Async do
-      tasks = 5.times.map do |i|
-        Async do
-          puts "Task #{i} started"
-          connection = ActiveRecord::Base.connection
-          connection_id = connection.object_id
-          puts "Task #{i} using connection #{connection_id}"
-
-          # Simulate some database operation
-          User.create(email: "user#{i}@example.com")
-          user_count = User.count
-
-          puts "Task #{i} completed, user_count: #{user_count}"
-        ensure
-          # Ensure the connection is returned to the pool
-          # Without this, the connection will be held until the end of the test
-          # because AR does not automatically return the connection to the pool
-          ActiveRecord::Base.clear_active_connections!
+    Async do |task|
+      6.times.map do |i|
+        task.async do
+          pid = get_pid
+          pids_mux.synchronize { pids << pid }
+          puts "Task #{i} started, using connection #{pid}"
+          ActiveRecord::Base.connection.execute("SELECT pg_sleep(0.25)")
+          puts "Task #{i} completed"
         end
-      end
-      tasks.each(&:wait)
+      end.each(&:wait)
     end
 
-    # After all tasks complete
-    connections_in_use = connection_pool.connections.size
+    # Expect each connection to be used equally amongst the tasks
+    unique_pids = pids.uniq
+    expect(unique_pids.size).to eq(2)
+    expect(pids.filter { |pid| pid == unique_pids.first }.size).to eq(3)
+    expect(pids.filter { |pid| pid == unique_pids.last }.size).to eq(3)
+
+    connections_in_use = ActiveRecord::Base.connection_pool.connections.size
     puts "Connections in use after tasks: #{connections_in_use}"
-    expect(connections_in_use).to be <= connection_pool.size
+    expect(connections_in_use).to be <= ActiveRecord::Base.connection_pool.size
   end
 
+  it 'isolates transaction connections from non-transaction connections' do
+    tx_conn_id = nil
+    pids = []
+    pids_mux = Mutex.new
+
+    Async do |task|
+      # Long running transaction
+      lr_task = task.async do
+        ActiveRecord::Base.transaction do
+          pid = get_pid
+          puts "Task LR started, using connection #{pid}"
+          tx_conn_id = pid
+          ActiveRecord::Base.connection.execute("SELECT pg_sleep(5)")
+        end
+      end
+
+      tasks = 6.times.map do |i|
+        task.async do
+          pid = get_pid
+          puts "Task #{i} started, using connection #{pid}"
+          pids_mux.synchronize { pids << pid }
+          ActiveRecord::Base.connection.execute("SELECT 1")
+        end
+      end
+
+      tasks.append(lr_task).each(&:wait)
+    end
+
+    expect(pids.uniq.size).to eq(1)
+    expect(tx_conn_id).not_to eq(pids.first)
+  end
 end

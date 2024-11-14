@@ -1,17 +1,17 @@
-development:
-  adapter: postgresql
-  database: async
-  username: async
-  password: async
-  pool: 15
-  timeout: 5000
-  reaping_frequency: 1
-
 test:
   adapter: postgresql
   database: async
   username: async
   password: async
-  pool: 15
+  pool: 25 # 5 threads * 5 tasks per thread
+  timeout: 5000
+  reaping_frequency: 1
+
+two:
+  adapter: postgresql
+  database: async
+  username: async
+  password: async
+  pool: 2
   timeout: 5000
   reaping_frequency: 1

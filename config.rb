@@ -6,14 +6,15 @@ require 'yaml'
 require 'erb'
 
 # Load the database configuration
-db_config = YAML.load(ERB.new(File.read('db/config.yml')).result)
+DB_CONFIG = YAML.load(ERB.new(File.read('db/config.yml')).result)
 
 # Establish the database connection
-ActiveRecord::Base.establish_connection(db_config['test'])
+ActiveRecord::Base.establish_connection(DB_CONFIG['test'])
 
 # This means that each Fiber gets its own connection, isolated from other Fibers.
 # The default is "thead isolation" which means the same thing, but for threads.
 ActiveSupport::IsolatedExecutionState.isolation_level = :fiber
+
 # ActiveRecord::Base.logger = Logger.new(STDOUT)
 
 # Define the User model
